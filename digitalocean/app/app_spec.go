@@ -683,7 +683,6 @@ func appSpecServicesSchema() *schema.Resource {
 		"run_command": {
 			Type:        schema.TypeString,
 			Optional:    true,
-			Computed:    true,
 			Description: "An optional run command to override the component's default.",
 		},
 		"http_port": {
@@ -1256,24 +1255,20 @@ func appSpecIngressSchema() *schema.Resource {
 						"component": {
 							Type:     schema.TypeList,
 							Optional: true,
-							Computed: true,
 							MaxItems: 1,
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"name": {
 										Type:     schema.TypeString,
 										Optional: true,
-										Computed: true,
 									},
 									"preserve_path_prefix": {
 										Type:     schema.TypeBool,
 										Optional: true,
-										Computed: true,
 									},
 									"rewrite": {
 										Type:     schema.TypeString,
 										Optional: true,
-										Computed: true,
 									},
 								},
 							},
