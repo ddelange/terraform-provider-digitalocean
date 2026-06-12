@@ -1,61 +1,112 @@
-# This GitHub action will publish assets for release when a tag is created
-# that matches the pattern "v*" (ie. v0.1.0).
+# Release workflow for the dubclub-fixes branch.
+# Triggered by a `v*-dubclub.*` tag push: builds the full goreleaser matrix,
+# publishes the GitHub Release, then generates Terraform Provider Network Mirror
+# JSON manifests and deploys them to GitHub Pages.
 #
-# Based on the configuration provided at:
-# https://github.com/hashicorp/terraform-provider-scaffolding
+# Runbook: https://github.com/ddelange/terraform-provider-digitalocean/pull/<runbook-PR>
 name: Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*-dubclub.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
-  goreleaser:
+  release:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
-
-      - name: Unshallow
-        run: git fetch --prune --unshallow
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.23.x
-
-      - name: Import GPG key
-        id: import_gpg
-        uses: crazy-max/ghaction-import-gpg@v5.0.0
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.PASSPHRASE }}
+          go-version: '1.23'
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: "v2.14.3"
-          args: release --clean
-        env:
-          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install github-changelog-generator
-        run: go install github.com/digitalocean/github-changelog-generator@latest
-
-      - name: Generate Release Notes
-        run: github-changelog-generator -org digitalocean -repo terraform-provider-digitalocean > release_notes.txt
+          version: 'v2.14.3'
+          args: release --clean --skip=sign
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Create GitHub Release (Draft)
-        uses: softprops/action-gh-release@v2
+
+      - name: Generate network-mirror JSON manifests for this version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF_NAME#v}"
+          DIR="mirror/registry.terraform.io/digitalocean/digitalocean"
+          mkdir -p "$DIR"
+          python3 - "$VERSION" "$DIR" "$REPO" "$REF_NAME" <<'PY'
+          import hashlib, json, os, re, sys
+          version, out_dir, repo, tag = sys.argv[1:]
+          archives = {}
+          for fn in sorted(os.listdir("dist")):
+              m = re.match(rf"terraform-provider-digitalocean_{re.escape(version)}_([a-z0-9]+)_([a-z0-9]+)\.zip$", fn)
+              if not m:
+                  continue
+              os_, arch = m.groups()
+              h = hashlib.sha256(open(os.path.join("dist", fn), "rb").read()).hexdigest()
+              archives[f"{os_}_{arch}"] = {
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{fn}",
+                  "hashes": [f"zh:{h}"],
+              }
+          with open(os.path.join(out_dir, f"{version}.json"), "w") as f:
+              json.dump({"archives": archives}, f, indent=2, sort_keys=True)
+          PY
+
+      - name: Build index.json from all v*-dubclub.* tags
+        run: |
+          set -euo pipefail
+          DIR="mirror/registry.terraform.io/digitalocean/digitalocean"
+          python3 - "$DIR" <<'PY'
+          import json, subprocess, sys
+          out_dir = sys.argv[1]
+          tags = subprocess.check_output(
+              ["git", "tag", "--list", "v*-dubclub.*"], text=True
+          ).split()
+          versions = {t.lstrip("v"): {} for t in tags}
+          with open(f"{out_dir}/index.json", "w") as f:
+              json.dump({"versions": versions}, f, indent=2, sort_keys=True)
+          PY
+          cat "$DIR/index.json"
+
+      - name: Preserve previously published per-version manifests
+        run: |
+          set -euo pipefail
+          DIR="mirror/registry.terraform.io/digitalocean/digitalocean"
+          BASE="https://ddelange.github.io/terraform-provider-digitalocean/registry.terraform.io/digitalocean/digitalocean"
+          for v in $(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("versions", {}).keys()))' "$DIR/index.json"); do
+            if [ ! -f "$DIR/$v.json" ]; then
+              echo "Fetching prior $v.json from Pages"
+              curl -fsSL "$BASE/$v.json" -o "$DIR/$v.json" || echo "  (missing, skipping)"
+            fi
+          done
+          ls -la "$DIR"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          draft: true
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body_path: release_notes.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: mirror
+
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
