@@ -3,7 +3,7 @@
 # publishes the GitHub Release, then generates Terraform Provider Network Mirror
 # JSON manifests and deploys them to GitHub Pages.
 #
-# Runbook: https://github.com/ddelange/terraform-provider-digitalocean/pull/<runbook-PR>
+# Runbook: https://github.com/ddelange/terraform-provider-digitalocean/pull/45
 name: Release
 
 on:
